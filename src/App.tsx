@@ -10,7 +10,7 @@ import WorkCenters from "@/pages/WorkCenters";
 import Scheduling from "@/pages/Scheduling";
 import Forecasting from "@/pages/Forecasting";
 import Purchase from "@/pages/Purchase";
-import Logistics from "@/pages/Logistics";
+import Logistics from "@/pages/logistics";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();

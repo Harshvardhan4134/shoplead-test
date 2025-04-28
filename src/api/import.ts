@@ -423,20 +423,29 @@ export async function handleImport(file: File) {
           const dateValue = typeof excelDate === 'number'
             ? new Date(Math.round((excelDate - 25569) * 86400 * 1000)).toISOString()
             : new Date().toISOString();
-
+            
+          // Track the Req. Tracking Number to link POs to jobs
+          const reqTrackingNumber = record['Req. Tracking Number'] || '';
+          
+          // This will be linked to jobs later using the job_number
+          // Some tracking numbers directly correspond to job numbers
           return {
-            po_number: String(record['Purchasing Document'] || ''),
-            job_id: null, // Can be linked to jobs later if needed
+            purchasing_document: String(record['Purchasing Document'] || ''),
+            req_tracking_number: String(reqTrackingNumber),
+            item: String(record['Item'] || ''),
+            purchasing_group: String(record['Purchasing Group'] || ''),
+            document_date: dateValue,
             vendor: String(record['Vendor/supplying plant'] || ''),
-            amount: Number(record['Net price']) || 0,
+            short_text: String(record['Short Text'] || ''),
+            order_quantity: Number(record['Order Quantity']) || 0,
+            net_price: Number(record['Net price']) || 0,
+            remaining_quantity: Number(record['Still to be delivered (qty)']) || 0,
+            remaining_value: Number(record['Still to be delivered (value)']) || 0,
+            material: String(record['Material'] || ''),
             status: record['Deletion Indicator'] ? 'Cancelled' :
-              Number(record['Still to be delivered (qty)']) > 0 ? 'pending' : 'completed',
-            issue_date: dateValue,
-            expected_date: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
-            received_date: Number(record['Still to be delivered (qty)']) > 0 ? null : dateValue,
-            notes: String(record['Short Text'] || ''),
-            description: String(record['Short Text'] || ''),
-            severity: 'Medium'
+              Number(record['Still to be delivered (qty)']) > 0 ? 'Open' : 'Completed',
+            // Try to link to job by matching tracking number to job number
+            job_number: String(reqTrackingNumber)
           };
         } catch (error) {
           console.error('Error processing PO record:', record, error);

@@ -49,7 +49,6 @@ import {
   ChevronDown,
   Calculator
 } from "lucide-react";
-import ForecastingDataFixer from "@/components/ForecastingDataFixer";
 
 interface ForecastMetricCardProps {
   title: string;
@@ -626,7 +625,7 @@ export default function Forecasting() {
 
   if (isLoading) {
     return (
-      <DashboardLayout>
+      <DashboardLayout showNav={false}>
         <div className="container mx-auto py-8">
           <LoadingSpinner message="Loading forecast data..." />
         </div>
@@ -635,9 +634,7 @@ export default function Forecasting() {
   }
 
   return (
-    <DashboardLayout>
-      <ForecastingDataFixer />
-      
+    <DashboardLayout showNav={false}>
       <div className="container mx-auto py-6">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
           <div>

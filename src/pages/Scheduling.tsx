@@ -1,11 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import ActionButtons from "@/components/dashboard/ActionButtons";
 import { Calendar, RefreshCw, List } from "lucide-react";
 import { format, formatISO, parseISO, isSameDay } from "date-fns";
 import { WorkCenter, Job } from "@/shared/schema";
 import { queryClient } from "@/lib/queryClient";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { db } from '@/lib/db';
 import { useToast } from "@/components/ui/use-toast";
 
@@ -26,6 +25,8 @@ interface DbJob {
   operator?: string;
   shift?: string;
   job_type?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export default function Scheduling() {
@@ -34,24 +35,28 @@ export default function Scheduling() {
   const [selectedWorkCenter, setSelectedWorkCenter] = useState<string>("all");
   const [selectedStatus, setSelectedStatus] = useState<string>("all");
   const [lastUpdated, setLastUpdated] = useState<string>("");
+  const [localScheduledJobs, setLocalScheduledJobs] = useState<Job[]>([]);
 
   // Fetch jobs data from database with proper type handling
   const { data: jobsData = [], isLoading: isLoadingJobs } = useQuery<Job[]>({
     queryKey: ["jobs"],
     queryFn: async () => {
       try {
-        const data = await db.getJobs() as DbJob[];
+        const data = await db.getJobs() as unknown as DbJob[];
         // Transform data to ensure it matches Job interface
         return data.map(job => ({
           ...job,
+          id: typeof job.id === 'string' ? parseInt(job.id) : job.id,
           sap_data: [], // Empty array as default since it's required
           priority: (job.priority as "High" | "Medium" | "Low") || "Medium", // Cast to valid priority
           vendor_operations: [],
           notes: [],
           reminders: [],
           timeline: [],
-          ncr: []
-        }));
+          ncr: [],
+          created_at: job.created_at || new Date().toISOString(),
+          updated_at: job.updated_at || new Date().toISOString()
+        })) as unknown as Job[];
       } catch (error) {
         console.error("Error fetching jobs:", error);
         return [];
@@ -78,7 +83,9 @@ export default function Scheduling() {
     queryKey: ["lastUpdated"],
     queryFn: async () => {
       try {
-        const timestamp = await db.getLastUpdated();
+        const timestamp = db.getLastUpdated ? 
+          await db.getLastUpdated() : 
+          new Date().toISOString();
         setLastUpdated(timestamp || "");
         return timestamp;
       } catch (error) {
@@ -121,6 +128,21 @@ export default function Scheduling() {
     };
   });
 
+  // Function to get jobs for a specific day using localScheduledJobs
+  const getJobsForDay = (date: Date) => {
+    return localScheduledJobs.filter(job => {
+      if (!job.scheduled_date) return false;
+      return isSameDay(parseISO(job.scheduled_date), date);
+    });
+  };
+
+  // Update the local state when jobs data changes
+  useEffect(() => {
+    if (jobsData.length > 0) {
+      setLocalScheduledJobs(scheduledJobs);
+    }
+  }, [scheduledJobs]);
+
   // Add drag and drop functionality
   const handleDragStart = (e: React.DragEvent, job: Job) => {
     e.dataTransfer.setData("text/plain", JSON.stringify(job));
@@ -150,6 +172,14 @@ export default function Scheduling() {
         scheduled_date: formatISO(date, { representation: 'date' })
       };
 
+      // Immediately update the local state for instant UI feedback
+      setLocalScheduledJobs(prev => {
+        // Remove the job from its old position if it exists
+        const filteredJobs = prev.filter(j => j.id !== updatedJob.id);
+        // Add the updated job
+        return [...filteredJobs, updatedJob];
+      });
+
       // Update the job in the database
       await db.upsertJobs([updatedJob]);
 
@@ -162,11 +192,31 @@ export default function Scheduling() {
       });
 
       // Update last updated timestamp
-      await db.updateLastUpdated();
+      try {
+        if (db.updateLastUpdated) {
+          if (typeof db.updateLastUpdated === 'function') {
+            // Check if it needs a parameter
+            const paramCount = db.updateLastUpdated.length;
+            if (paramCount > 0) {
+              await db.updateLastUpdated(new Date().toISOString());
+            } else {
+              await db.updateLastUpdated();
+            }
+          }
+        } else {
+          console.log("updateLastUpdated method not available");
+        }
+      } catch (error) {
+        console.error("Error updating timestamp:", error);
+      }
 
       // Invalidate and refetch queries
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
       await queryClient.invalidateQueries({ queryKey: ["lastUpdated"] });
+      
+      // Also invalidate dashboard-related queries to update the scheduling overview
+      await queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      await queryClient.invalidateQueries({ queryKey: ["workCenters"] });
 
       // Show success message
       toast({
@@ -214,8 +264,6 @@ export default function Scheduling() {
 
   return (
     <div className="container mx-auto py-8 px-4">
-      <ActionButtons />
-
       <div className="flex flex-col mb-6 animate-fade-in">
         <div className="flex justify-between items-center">
           <h1 className="text-2xl font-bold text-gray-900">Production Schedule</h1>
@@ -294,7 +342,7 @@ export default function Scheduling() {
             <h3 className="text-lg font-semibold mb-4">Scheduled Jobs</h3>
 
             <div className="space-y-4">
-              {scheduledJobs.map((job, index) => (
+              {localScheduledJobs.map((job, index) => (
                 <div
                   key={index}
                   className="bg-gray-50 p-4 rounded-md cursor-move"
@@ -382,7 +430,7 @@ export default function Scheduling() {
                       <div className="text-right text-sm text-gray-500 mb-1">
                         {format(day.date, "d")}
                       </div>
-                      {day.jobs.map((job, jobIndex) => (
+                      {getJobsForDay(day.date).map((job, jobIndex) => (
                         <div
                           key={`${job.id}-${jobIndex}`}
                           className={`mb-1 px-1 py-0.5 rounded text-xs truncate cursor-move ${job.status === 'Completed' ? 'bg-green-200 text-green-800' :
@@ -411,7 +459,7 @@ export default function Scheduling() {
             <div className="bg-white p-6 rounded-lg border border-gray-200">
               <h3 className="text-lg font-semibold mb-4">Job List</h3>
               <div className="space-y-4">
-                {scheduledJobs.map((job, index) => (
+                {localScheduledJobs.map((job, index) => (
                   <div key={index} className="bg-gray-50 p-4 rounded-md">
                     <div className="flex justify-between items-start">
                       <div>

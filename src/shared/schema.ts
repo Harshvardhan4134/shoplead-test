@@ -12,6 +12,19 @@ export interface SAPOperation {
   updated_at: string;
 }
 
+export interface Attachment {
+  id: string;
+  job_number: string;
+  part_name: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  file_path: string;
+  file_url: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Job {
   id: number | string | string;
   job_number: string;
@@ -33,6 +46,7 @@ export interface Job {
   reminders?: any[];
   timeline?: any[];
   ncr?: any[];
+  attachments?: Attachment[];
 }
 
 export interface Note {
