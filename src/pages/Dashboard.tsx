@@ -54,6 +54,8 @@ import { JobModal } from "@/components/jobs/JobModal";
 import { motion } from "framer-motion";
 import { PurchaseOrderModal } from "@/components/purchase/PurchaseOrderModal";
 import { Badge } from "@/components/ui/badge";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 
 // Add delay utility function
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -1814,6 +1816,10 @@ export default function Dashboard() {
     });
   };
 
+  // Get auth context for user information
+  const { user } = useAuth();
+  const navigate = useNavigate();
+
   return (
     <div className="container mx-auto">
       <div className="flex justify-between items-center mb-6">
@@ -2685,6 +2691,78 @@ export default function Dashboard() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Debug Navigation - Remove in production */}
+      <div className="bg-red-50 p-4 border-l-4 border-red-500 mb-4">
+        <h3 className="font-bold">Debug Navigation</h3>
+        <p className="text-sm mb-2">Authentication Status: {user ? `Logged in as ${user.name} (${user.role})` : 'Not logged in'}</p>
+        <div className="flex flex-wrap gap-2">
+          <button 
+            onClick={() => {
+              // Create admin user and store in localStorage
+              const adminUser = {
+                id: '1',
+                name: 'Admin User',
+                email: 'admin@example.com',
+                role: 'admin'
+              };
+              localStorage.setItem('user', JSON.stringify(adminUser));
+              // Manually refresh to load the user without full page reload
+              window.location.href = "/admin";
+            }}
+            className="px-3 py-1 bg-purple-900 text-white rounded text-sm"
+          >
+            Force Login as Admin
+          </button>
+          <button 
+            onClick={() => navigate("/")}
+            className="px-3 py-1 bg-blue-500 text-white rounded text-sm"
+          >
+            Home
+          </button>
+          <button 
+            onClick={() => navigate("/admin")}
+            className="px-3 py-1 bg-purple-500 text-white rounded text-sm"
+          >
+            Admin Dashboard
+          </button>
+          <button 
+            onClick={() => navigate("/manager")}
+            className="px-3 py-1 bg-green-500 text-white rounded text-sm"
+          >
+            Manager Dashboard
+          </button>
+          <button 
+            onClick={() => navigate("/worker")}
+            className="px-3 py-1 bg-yellow-500 text-white rounded text-sm"
+          >
+            Worker Dashboard
+          </button>
+          <button 
+            onClick={() => navigate("/shop-lead")}
+            className="px-3 py-1 bg-orange-500 text-white rounded text-sm"
+          >
+            Shop Lead
+          </button>
+          <button 
+            onClick={() => navigate("/scheduling")}
+            className="px-3 py-1 bg-indigo-500 text-white rounded text-sm"
+          >
+            Scheduling
+          </button>
+          <button 
+            onClick={() => {
+              localStorage.removeItem('user');
+              sessionStorage.removeItem('autoLoginAttempted');
+              navigate("/login");
+            }}
+            className="px-3 py-1 bg-red-500 text-white rounded text-sm"
+          >
+            Logout (Force)
+          </button>
+        </div>
+      </div>
+      {/* End Debug Navigation */}
     </div>
   );
 }

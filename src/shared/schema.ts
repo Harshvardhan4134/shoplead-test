@@ -25,25 +25,53 @@ export interface Attachment {
   updated_at?: string;
 }
 
-export interface Job {
-  id: number | string | string;
-  job_number: string;
-  title: string;
+export interface WorkOrder {
+  id: number | string;
+  job_id?: number | string;
+  job_number?: string;
+  operation_number: string;
   description: string;
-  status: "New" | "In Progress" | "Delayed" | "Completed" | "On Hold";
+  work_center?: string;
+  planned_hours?: number;
+  actual_hours?: number;
+  status?: string;
+  scheduled_date?: string;
+  start_date?: string;
+  end_date?: string;
+  assigned_to?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Job {
+  id: number | string;
+  job_number: string;
+  title?: string;
+  description?: string;
+  customer?: string;
+  status: string;
   due_date: string;
-  scheduled_date: string;
-  priority: "High" | "Medium" | "Low";
+  scheduled_date?: string;
+  priority?: string;
   progress: number;
-  work_center: string;
-  customer: string;
+  work_center?: string;
+  work_orders?: WorkOrder[];
+  planned_hours?: number;
+  actual_hours?: number;
+  assignedEmployees?: number[];
+  budget?: number;
+  actual_cost?: number;
+  completion_date?: string;
+  had_issues?: boolean;
+  rework_percentage?: number;
+  notes?: { title: string; content: string; createdAt: string }[];
+  reminders?: { date: string; description: string }[];
+  part_name?: string;
   created_at: string;
   updated_at: string;
   reference_name?: string;
   sap_data?: any[]; // Using any[] to accommodate different formats
   vendor_operations?: any[];
-  notes?: any[];
-  reminders?: any[];
   timeline?: any[];
   ncr?: any[];
   attachments?: Attachment[];
@@ -126,4 +154,12 @@ export interface VendorOperation {
   dateRange: string;
   status: string;
   notes?: string;
+}
+
+export interface Employee {
+  id: number;
+  name: string;
+  department: string;
+  role: string;
+  assignedJobs: (number | string)[];
 }

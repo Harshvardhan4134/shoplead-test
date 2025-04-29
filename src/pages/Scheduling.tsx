@@ -1,493 +1,823 @@
-import { useQuery } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
-import { Calendar, RefreshCw, List } from "lucide-react";
-import { format, formatISO, parseISO, isSameDay } from "date-fns";
-import { WorkCenter, Job } from "@/shared/schema";
-import { queryClient } from "@/lib/queryClient";
 import { useState, useEffect } from "react";
-import { db } from '@/lib/db';
-import { useToast } from "@/components/ui/use-toast";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Calendar, momentLocalizer } from "react-big-calendar";
+import moment from "moment";
+import { format } from "date-fns";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  RefreshCw,
+  Search,
+  AlertTriangle,
+  Calendar as CalendarIcon,
+  CheckCircle2,
+  Clock,
+  XCircle,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  Move
+} from "lucide-react";
+import { api } from "@/services/api";
+import { Job, WorkOrder } from "@/shared/schema";
+import { useToast } from "@/hooks/use-toast";
+import "react-big-calendar/lib/css/react-big-calendar.css";
 
-// Type for raw job data from database
-interface DbJob {
-  id: number;
-  job_number: string;
+// Set up the localizer for the calendar
+const localizer = momentLocalizer(moment);
+
+// Define the status colors for work orders
+const statusColors = {
+  "Not Started": "#e5e7eb", // gray-200
+  "In Progress": "#bfdbfe", // blue-200
+  "Completed": "#bbf7d0", // green-200
+  "On Hold": "#fef08a", // yellow-200
+  "Cancelled": "#fecaca", // red-200
+};
+
+// Define the event types for the calendar
+interface CalendarEvent {
+  id: string;
   title: string;
-  description: string;
-  status: "New" | "In Progress" | "Delayed" | "Completed" | "On Hold";
-  due_date: string;
-  scheduled_date: string;
-  priority: string;
-  progress: number;
-  work_center: string;
-  customer: string;
-  employee_name?: string;
-  operator?: string;
-  shift?: string;
-  job_type?: string;
-  created_at?: string;
-  updated_at?: string;
+  start: Date;
+  end: Date;
+  jobId: number | string;
+  workOrderId?: number | string;
+  status: string;
+  allDay?: boolean;
+  workCenter?: string;
 }
 
-export default function Scheduling() {
+const Scheduling = () => {
   const { toast } = useToast();
-  const [viewMode, setViewMode] = useState<"calendar" | "list">("calendar");
-  const [selectedWorkCenter, setSelectedWorkCenter] = useState<string>("all");
-  const [selectedStatus, setSelectedStatus] = useState<string>("all");
-  const [lastUpdated, setLastUpdated] = useState<string>("");
-  const [localScheduledJobs, setLocalScheduledJobs] = useState<Job[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [view, setView] = useState<"month" | "week" | "day">("week");
+  const [date, setDate] = useState(new Date());
+  const [jobFilter, setJobFilter] = useState<string>("all");
+  const [jobTypeFilter, setJobTypeFilter] = useState<string>("all");
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [draggingWorkOrder, setDraggingWorkOrder] = useState<WorkOrder | null>(null);
+  const queryClient = useQueryClient();
+  const [debugInfo, setDebugInfo] = useState<string>("");
 
-  // Fetch jobs data from database with proper type handling
-  const { data: jobsData = [], isLoading: isLoadingJobs } = useQuery<Job[]>({
-    queryKey: ["jobs"],
+  // Fetch jobs
+  const {
+    data: jobs = [],
+    isLoading: isLoadingJobs,
+    error: jobsError,
+    refetch: refetchJobs
+  } = useQuery<Job[]>({
+    queryKey: ["/api/jobs"],
     queryFn: async () => {
       try {
-        const data = await db.getJobs() as unknown as DbJob[];
-        // Transform data to ensure it matches Job interface
-        return data.map(job => ({
-          ...job,
-          id: typeof job.id === 'string' ? parseInt(job.id) : job.id,
-          sap_data: [], // Empty array as default since it's required
-          priority: (job.priority as "High" | "Medium" | "Low") || "Medium", // Cast to valid priority
-          vendor_operations: [],
-          notes: [],
-          reminders: [],
-          timeline: [],
-          ncr: [],
-          created_at: job.created_at || new Date().toISOString(),
-          updated_at: job.updated_at || new Date().toISOString()
-        })) as unknown as Job[];
+        // Try to get data from cache first
+        const cachedData = queryClient.getQueryData<Job[]>(["/api/jobs"]);
+        if (cachedData && cachedData.length > 0) {
+          console.log("Using cached jobs data:", cachedData.length);
+          return cachedData;
+        }
+
+        // If no cached data, fetch from API
+        const data = await api.getJobs();
+        console.log("Fetched jobs data from API:", data.length);
+        return data || []; // Ensure we return an empty array if data is undefined
       } catch (error) {
         console.error("Error fetching jobs:", error);
-        return [];
+        throw error;
       }
     },
+    staleTime: 1000 * 60 * 5, // 5 minutes
+    retry: 3,
+    refetchOnWindowFocus: false,
   });
 
-  // Fetch work centers data
-  const { data: workCenters = [], isLoading: isLoadingWorkCenters } = useQuery<WorkCenter[]>({
-    queryKey: ["workCenters"],
-    queryFn: async () => {
-      try {
-        const data = await db.getWorkCenters();
-        return data;
-      } catch (error) {
-        console.error("Error fetching work centers:", error);
-        return [];
-      }
-    },
-  });
+  // Function to identify D&I jobs
+  const isDismantlingInspectionJob = (job: Job): boolean => {
+    // Check if job has only one work order
+    const hasOneWorkOrder = !job.work_orders || job.work_orders.length === 1;
+    
+    // Check if job title or part name contains D&I related terms
+    const titleLower = (job.title || '').toLowerCase();
+    const partNameLower = (job.part_name || '').toLowerCase();
+    
+    const diTerms = ['dismantling', 'dismantle', 'inspection', 'inspect', 'd&i'];
+    const hasDITerms = diTerms.some(term => 
+      titleLower.includes(term) || partNameLower.includes(term)
+    );
+    
+    return hasOneWorkOrder && hasDITerms;
+  };
 
-  // Fetch last updated timestamp
-  useQuery({
-    queryKey: ["lastUpdated"],
-    queryFn: async () => {
-      try {
-        const timestamp = db.getLastUpdated ? 
-          await db.getLastUpdated() : 
-          new Date().toISOString();
-        setLastUpdated(timestamp || "");
-        return timestamp;
-      } catch (error) {
-        console.error("Error fetching last updated:", error);
-        return "";
-      }
-    },
-  });
-
-  // Filter jobs based on selected filters with type safety
-  const filteredJobs = jobsData.filter(job => {
-    const workCenterMatch = selectedWorkCenter === "all" || job.work_center === selectedWorkCenter;
-    const statusMatch = selectedStatus === "all" || job.status === selectedStatus;
-    return workCenterMatch && statusMatch;
-  });
-
-  // Filter scheduled jobs - show all jobs that have a work center assigned
-  const scheduledJobs = filteredJobs.filter(job =>
-    job.work_center && job.work_center.trim() !== ""
+  // Filter active jobs (excluding D&I jobs if not selected)
+  const activeJobs = jobs.filter(job => 
+    job.status !== 'Completed' && 
+    job.status !== 'Delayed' &&
+    (jobTypeFilter === 'all' || 
+     (jobTypeFilter === 'regular' && !isDismantlingInspectionJob(job)) ||
+     (jobTypeFilter === 'di' && isDismantlingInspectionJob(job)))
   );
 
-  const isLoading = isLoadingJobs || isLoadingWorkCenters;
+  // Filter jobs based on search query and selected job
+  const filteredJobs = activeJobs.filter(job => {
+    const searchLower = searchQuery.toLowerCase();
+    const jobNumber = String(job.job_number);
+    const title = String(job.title || '');
+    const customer = String(job.customer || '');
 
-  // Get current date
-  const today = new Date();
-  const startOfWeek = new Date(today);
-  startOfWeek.setDate(today.getDate() - today.getDay());
+    const matchesSearch = 
+      jobNumber.toLowerCase().includes(searchLower) ||
+      title.toLowerCase().includes(searchLower) ||
+      customer.toLowerCase().includes(searchLower);
 
-  // Create calendar days for 6 weeks
-  const calendarDays = Array.from({ length: 42 }).map((_, index) => {
-    const date = new Date(startOfWeek);
-    date.setDate(startOfWeek.getDate() + index - startOfWeek.getDay());
-    return {
-      date,
-      jobs: scheduledJobs.filter(job => {
-        if (!job.scheduled_date) return false;
-        // Use isSameDay helper from date-fns for reliable date comparison
-        return isSameDay(parseISO(job.scheduled_date), date);
-      })
-    };
+    const matchesJobFilter = jobFilter === 'all' || jobNumber === jobFilter;
+
+    return matchesSearch && matchesJobFilter;
   });
 
-  // Function to get jobs for a specific day using localScheduledJobs
-  const getJobsForDay = (date: Date) => {
-    return localScheduledJobs.filter(job => {
-      if (!job.scheduled_date) return false;
-      return isSameDay(parseISO(job.scheduled_date), date);
+  // Extract all work orders from filtered jobs
+  const allWorkOrders: WorkOrder[] = [];
+  filteredJobs.forEach(job => {
+    if (job.work_orders && job.work_orders.length > 0) {
+      job.work_orders.forEach(wo => {
+        allWorkOrders.push({
+          ...wo,
+          job_id: job.id,
+          job_number: job.job_number
+        });
+      });
+    } else {
+      // If no work orders, create a placeholder one
+      allWorkOrders.push({
+        id: `placeholder-${job.id}`,
+        description: job.title || `Job #${job.job_number}`,
+        status: job.status || "Not Started",
+        job_id: job.id,
+        job_number: job.job_number,
+        operation_number: "1",
+        planned_hours: job.planned_hours || 24
+      });
+    }
+  });
+
+  // Generate calendar events from job data
+  useEffect(() => {
+    const newEvents: CalendarEvent[] = [];
+    
+    jobs.forEach(job => {
+      // Skip jobs that don't match the filter
+      if (jobFilter !== 'all' && String(job.job_number) !== jobFilter) {
+        return;
+      }
+      
+      // Skip jobs that don't match the job type filter
+      if (
+        (jobTypeFilter === 'regular' && isDismantlingInspectionJob(job)) ||
+        (jobTypeFilter === 'di' && !isDismantlingInspectionJob(job))
+      ) {
+        return;
+      }
+      
+      if (job.scheduled_date) {
+        // If the job has work orders, create an event for each work order
+        if (job.work_orders && job.work_orders.length > 0) {
+          job.work_orders.forEach((workOrder, index) => {
+            // Calculate start and end times based on work order sequence
+            const startDate = new Date(job.scheduled_date || job.due_date);
+            startDate.setHours(8 + (index * 4) % 8);
+            startDate.setDate(startDate.getDate() + Math.floor((index * 4) / 8));
+            
+            const endDate = new Date(startDate);
+            const duration = workOrder.planned_hours || 4; // Default to 4 hours
+            endDate.setHours(endDate.getHours() + Math.min(duration, 8));
+            
+            newEvents.push({
+              id: `wo-${workOrder.id || index}-${job.id}`,
+              title: `${job.job_number} - ${workOrder.description || `Operation ${workOrder.operation_number || index + 1}`}`,
+              start: startDate,
+              end: endDate,
+              jobId: job.id,
+              workOrderId: workOrder.id,
+              status: workOrder.status || "Not Started",
+              workCenter: workOrder.work_center
+            });
+          });
+        } else {
+          // If the job has no work orders, create a single all-day event
+          const startDate = new Date(job.scheduled_date || job.due_date);
+          const endDate = new Date(startDate);
+          endDate.setHours(endDate.getHours() + 8);
+          
+          newEvents.push({
+            id: `job-${job.id}`,
+            title: `${job.job_number} - ${job.title || "No description"}`,
+            start: startDate,
+            end: endDate,
+            jobId: job.id,
+            status: job.status || "Not Started",
+            workCenter: job.work_center
+          });
+        }
+      }
+    });
+    
+    setEvents(newEvents);
+  }, [jobs, jobFilter, jobTypeFilter]);
+
+  // Handle calendar event selection
+  const handleSelectEvent = (event: CalendarEvent) => {
+    // Find the job for this event
+    const job = jobs.find(j => j.id === event.jobId);
+    if (!job) return;
+    
+    toast({
+      title: `Job #${job.job_number}`,
+      description: `${event.title} - ${event.status}`,
     });
   };
 
-  // Update the local state when jobs data changes
-  useEffect(() => {
-    if (jobsData.length > 0) {
-      setLocalScheduledJobs(scheduledJobs);
-    }
-  }, [scheduledJobs]);
-
-  // Add drag and drop functionality
-  const handleDragStart = (e: React.DragEvent, job: Job) => {
-    e.dataTransfer.setData("text/plain", JSON.stringify(job));
-    // Add visual feedback for drag
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.opacity = '0.5';
-    }
-  };
-
-  const handleDragEnd = (e: React.DragEvent) => {
-    // Reset visual feedback
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.opacity = '1';
-    }
-  };
-
-  const handleDrop = async (e: React.DragEvent, date: Date) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    try {
-      const jobData = JSON.parse(e.dataTransfer.getData("text/plain")) as Job;
-
-      // Format date in ISO format for database
-      const updatedJob: Job = {
-        ...jobData,
-        scheduled_date: formatISO(date, { representation: 'date' })
-      };
-
-      // Immediately update the local state for instant UI feedback
-      setLocalScheduledJobs(prev => {
-        // Remove the job from its old position if it exists
-        const filteredJobs = prev.filter(j => j.id !== updatedJob.id);
-        // Add the updated job
-        return [...filteredJobs, updatedJob];
-      });
-
-      // Update the job in the database
-      await db.upsertJobs([updatedJob]);
-
-      // Update the cache
-      queryClient.setQueryData<Job[]>(["jobs"], (oldData) => {
-        if (!oldData) return [];
-        return oldData.map(job =>
-          job.id === updatedJob.id ? updatedJob : job
-        );
-      });
-
-      // Update last updated timestamp
-      try {
-        if (db.updateLastUpdated) {
-          if (typeof db.updateLastUpdated === 'function') {
-            // Check if it needs a parameter
-            const paramCount = db.updateLastUpdated.length;
-            if (paramCount > 0) {
-              await db.updateLastUpdated(new Date().toISOString());
-            } else {
-              await db.updateLastUpdated();
-            }
-          }
-        } else {
-          console.log("updateLastUpdated method not available");
-        }
-      } catch (error) {
-        console.error("Error updating timestamp:", error);
-      }
-
-      // Invalidate and refetch queries
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      await queryClient.invalidateQueries({ queryKey: ["lastUpdated"] });
-      
-      // Also invalidate dashboard-related queries to update the scheduling overview
-      await queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      await queryClient.invalidateQueries({ queryKey: ["workCenters"] });
-
-      // Show success message
+  // Handle calendar slot selection (for adding new events)
+  const handleSelectSlot = ({ start, end }: { start: Date; end: Date }) => {
+    if (jobFilter === 'all') {
       toast({
-        title: "Job scheduled",
-        description: `Job #${jobData.job_number} has been scheduled for ${format(date, "MMM dd, yyyy")}`,
-        variant: "default",
-      });
-    } catch (error) {
-      console.error("Error updating job:", error);
-      // Show error message
-      toast({
-        title: "Error scheduling job",
-        description: "Failed to update job schedule. Please try again.",
+        title: "Please select a job",
+        description: "Select a specific job to add to the schedule",
         variant: "destructive",
       });
+      return;
     }
+    
+    // Find the selected job
+    const selectedJob = jobs.find(job => String(job.job_number) === jobFilter);
+    if (!selectedJob) return;
+    
+    // Create a placeholder work order
+    const newWorkOrder = {
+      id: `new-wo-${Date.now()}`,
+      description: `Scheduled operation for ${selectedJob.job_number}`,
+      status: "Not Started",
+      job_id: selectedJob.id,
+      job_number: selectedJob.job_number,
+      operation_number: "1",
+      planned_hours: 4,
+      scheduled_date: start.toISOString()
+    };
+    
+    // Create a new event
+    const newEvent: CalendarEvent = {
+      id: `new-event-${Date.now()}`,
+      title: `${selectedJob.job_number} - New Operation`,
+      start,
+      end,
+      jobId: selectedJob.id,
+      workOrderId: newWorkOrder.id,
+      status: "Not Started"
+    };
+    
+    // Add the new event
+    setEvents([...events, newEvent]);
+    
+    toast({
+      title: "New operation scheduled",
+      description: `Added operation for Job #${selectedJob.job_number}`,
+    });
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // Add visual feedback for valid drop target
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.backgroundColor = 'rgba(0, 0, 0, 0.05)';
-    }
-  };
+  // A more direct approach to drag and drop 
+  useEffect(() => {
+    const initDragAndDrop = () => {
+      console.log("Initializing drag and drop...");
+      
+      // Find all draggable work order elements
+      const draggableElements = document.querySelectorAll('[data-workorder]');
+      console.log("Found draggable elements:", draggableElements.length);
+      
+      const dropTarget = document.querySelector('[data-droppable="true"]');
+      console.log("Found drop target:", !!dropTarget);
+      
+      if (!dropTarget) {
+        console.error("No drop target found");
+        return;
+      }
+      
+      // Function to handle drag start
+      const handleDragStart = (e) => {
+        const workOrderJSON = e.currentTarget.getAttribute('data-workorder');
+        if (!workOrderJSON) {
+          console.error("No work order data found");
+          return;
+        }
+        
+        try {
+          const workOrder = JSON.parse(workOrderJSON);
+          console.log("Drag started for work order:", workOrder.id);
+          setDraggingWorkOrder(workOrder);
+          setDebugInfo(`Dragging: ${workOrder.description || workOrder.id}`);
+          
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', workOrderJSON);
+            
+            // Create a custom drag image
+            const ghostEl = document.createElement('div');
+            ghostEl.textContent = workOrder.description || `Operation ${workOrder.operation_number}`;
+            ghostEl.style.backgroundColor = '#bfdbfe';
+            ghostEl.style.padding = '8px';
+            ghostEl.style.borderRadius = '4px';
+            ghostEl.style.position = 'absolute';
+            ghostEl.style.top = '-1000px';
+            document.body.appendChild(ghostEl);
+            
+            e.dataTransfer.setDragImage(ghostEl, 0, 0);
+            
+            // Remove ghost after drag
+            setTimeout(() => {
+              document.body.removeChild(ghostEl);
+            }, 0);
+          }
+        } catch (error) {
+          console.error("Error parsing work order data", error);
+        }
+      };
+      
+      // Function to handle drag over
+      const handleDragOver = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = 'move';
+        }
+      };
+      
+      // Function to handle drag enter
+      const handleDragEnter = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropTarget.classList.add('bg-blue-50');
+      };
+      
+      // Function to handle drag leave
+      const handleDragLeave = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropTarget.classList.remove('bg-blue-50');
+      };
+      
+      // Function to handle drop
+      const handleDrop = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropTarget.classList.remove('bg-blue-50');
+        console.log("Drop event triggered");
+        
+        try {
+          const workOrderJSON = e.dataTransfer?.getData('text/plain');
+          console.log("Data from drop event:", workOrderJSON ? "data found" : "no data");
+          
+          let workOrderData = null;
+          
+          if (workOrderJSON) {
+            workOrderData = JSON.parse(workOrderJSON);
+            setDebugInfo(`Drop: using data from dataTransfer`);
+          } else if (draggingWorkOrder) {
+            workOrderData = draggingWorkOrder;
+            setDebugInfo(`Drop: using data from state`);
+          }
+          
+          if (!workOrderData) {
+            console.error("No work order data available for drop");
+            setDebugInfo("Drop failed: No work order data");
+            return;
+          }
+          
+          console.log("Processing drop for work order:", workOrderData.id);
+          
+          // Create a default start date (current date at 8 AM)
+          const startDate = new Date();
+          startDate.setHours(8, 0, 0, 0);
+          
+          // Create a default end date based on planned hours
+          const endDate = new Date(startDate);
+          endDate.setHours(endDate.getHours() + (workOrderData.planned_hours || 4));
+          
+          // Create a new calendar event
+          const newEvent = {
+            id: `drag-event-${workOrderData.id}-${Date.now()}`,
+            title: `${workOrderData.job_number} - ${workOrderData.description || `Operation ${workOrderData.operation_number}`}`,
+            start: startDate,
+            end: endDate,
+            jobId: workOrderData.job_id,
+            workOrderId: workOrderData.id,
+            status: workOrderData.status || "Not Started",
+            workCenter: workOrderData.work_center
+          };
+          
+          console.log("Created new event:", newEvent);
+          
+          // Add the new event to the calendar
+          setEvents(prev => [...prev, newEvent]);
+          
+          toast({
+            title: "Work order scheduled",
+            description: `Added ${workOrderData.description || `Operation ${workOrderData.operation_number}`} to schedule`,
+          });
+          
+          // Clear dragging state
+          setDraggingWorkOrder(null);
+        } catch (error) {
+          console.error("Error processing drop:", error);
+          setDebugInfo(`Drop error: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+      
+      // Set up drag event listeners for each work order
+      draggableElements.forEach(element => {
+        element.addEventListener('dragstart', handleDragStart);
+      });
+      
+      // Set up drop target event listeners
+      dropTarget.addEventListener('dragover', handleDragOver);
+      dropTarget.addEventListener('dragenter', handleDragEnter);
+      dropTarget.addEventListener('dragleave', handleDragLeave);
+      dropTarget.addEventListener('drop', handleDrop);
+      
+      // Return cleanup function
+      return () => {
+        draggableElements.forEach(element => {
+          element.removeEventListener('dragstart', handleDragStart);
+        });
+        
+        dropTarget.removeEventListener('dragover', handleDragOver);
+        dropTarget.removeEventListener('dragenter', handleDragEnter);
+        dropTarget.removeEventListener('dragleave', handleDragLeave);
+        dropTarget.removeEventListener('drop', handleDrop);
+      };
+    };
+    
+    // Wait for DOM to be ready
+    setTimeout(initDragAndDrop, 500);
+    
+  }, [jobs, jobFilter, jobTypeFilter, toast, draggingWorkOrder, setDebugInfo]);
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    // Reset visual feedback
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.backgroundColor = '';
-    }
-  };
-
-  if (isLoading) {
+  // Format events for the calendar
+  const calendarEvents = events.map(event => ({
+    ...event,
+    title: event.title,
+    backgroundColor: statusColors[event.status] || statusColors["Not Started"]
+  }));
+  
+  // Custom event component for the calendar
+  const EventComponent = ({ event }: any) => {
     return (
-      <div className="container mx-auto py-8 px-4">
+      <div
+        style={{
+          backgroundColor: statusColors[event.status] || statusColors["Not Started"],
+          border: `1px solid ${event.status === "Not Started" ? "#9ca3af" : 
+                           event.status === "In Progress" ? "#3b82f6" :
+                           event.status === "Completed" ? "#22c55e" :
+                           event.status === "On Hold" ? "#eab308" : "#ef4444"}`,
+          borderRadius: "4px",
+          padding: "2px 4px",
+          overflow: "hidden",
+          whiteSpace: "nowrap",
+          textOverflow: "ellipsis",
+          fontSize: "12px",
+          height: "100%"
+        }}
+      >
+        <div className="font-medium">{event.title}</div>
+        {event.workCenter && (
+          <div className="text-xs">{event.workCenter}</div>
+        )}
+      </div>
+    );
+  };
+
+  // Show loading states
+  if (isLoadingJobs) {
+    return (
+      <div className="container mx-auto p-8">
         <div className="flex items-center justify-center">
           <RefreshCw className="h-6 w-6 animate-spin mr-2" />
-          <span>Loading schedule data...</span>
+          <span>Loading scheduling data...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error states
+  if (jobsError) {
+  return (
+      <div className="container mx-auto p-8">
+        <div className="bg-red-50 border-l-4 border-red-400 p-4">
+          <div className="flex">
+            <div className="flex-shrink-0">
+              <AlertTriangle className="h-5 w-5 text-red-400" />
+            </div>
+            <div className="ml-3">
+              <p className="text-sm text-red-700">
+                {jobsError instanceof Error ? jobsError.message : "Failed to load scheduling data"}
+              </p>
+          </div>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="container mx-auto py-8 px-4">
-      <div className="flex flex-col mb-6 animate-fade-in">
-        <div className="flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-900">Production Schedule</h1>
-          {lastUpdated && (
-            <span className="text-sm text-gray-500">
-              Last updated: {format(new Date(lastUpdated), "MMM dd, yyyy HH:mm")}
-            </span>
-          )}
-        </div>
-
-        <div className="flex justify-between items-center mt-4">
-          <div className="flex">
-            <Button
-              variant={viewMode === "list" ? "default" : "outline"}
-              className="mr-2"
-              onClick={() => setViewMode("list")}
-            >
-              <List className="h-4 w-4 mr-2" />
-              List View
-            </Button>
-            <Button
-              variant={viewMode === "calendar" ? "default" : "outline"}
-              onClick={() => setViewMode("calendar")}
-            >
-              <Calendar className="h-4 w-4 mr-2" />
-              Calendar View
-            </Button>
-          </div>
-
-          <div className="flex items-center">
-            <select
-              className="bg-white border border-gray-300 rounded-md px-4 py-2 text-sm"
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-            >
-              <option value="all">All Status</option>
-              <option value="New">New</option>
-              <option value="In Progress">In Progress</option>
-              <option value="Completed">Completed</option>
-              <option value="Delayed">Delayed</option>
-              <option value="On Hold">On Hold</option>
-            </select>
-
-            <Button variant="outline" className="ml-2 p-2" size="icon">
-              <RefreshCw className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
+    <div className="container mx-auto p-6">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold mb-1">Scheduling</h1>
+        <p className="text-gray-600">Manage job operations and scheduling</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Sidebar with job list and work orders */}
         <div className="lg:col-span-1">
-          <div className="bg-white p-6 rounded-lg border border-gray-200 mb-6">
-            <h3 className="text-lg font-semibold mb-4">Filters</h3>
-
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Work Center</label>
-              <select
-                className="w-full bg-white border border-gray-300 rounded-md px-4 py-2 text-sm"
-                value={selectedWorkCenter}
-                onChange={(e) => setSelectedWorkCenter(e.target.value)}
-              >
-                <option value="all">All Work Centers</option>
-                {workCenters.map(workCenter => (
-                  <option key={workCenter.name} value={workCenter.name}>{workCenter.name}</option>
-                ))}
-              </select>
+          {/* Job filter controls */}
+          <div className="bg-white rounded-lg shadow p-4 mb-4">
+            <h2 className="text-lg font-medium mb-4">Job Selection</h2>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium text-gray-700 mb-1 block">
+                  Job Type
+                </label>
+                <Select
+                  value={jobTypeFilter}
+                  onValueChange={setJobTypeFilter}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="All Jobs" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Jobs</SelectItem>
+                    <SelectItem value="regular">Regular Jobs</SelectItem>
+                    <SelectItem value="di">D&I Jobs</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div>
+                <label className="text-sm font-medium text-gray-700 mb-1 block">
+                  Select Job Number
+                </label>
+                <Select
+                  value={jobFilter}
+                  onValueChange={setJobFilter}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="All Jobs" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Jobs</SelectItem>
+                    {activeJobs.map(job => (
+                      <SelectItem key={job.id} value={String(job.job_number)}>
+                        {job.job_number} - {job.title?.substring(0, 20)}
+                        {job.title && job.title.length > 20 ? "..." : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div>
+                <label className="text-sm font-medium text-gray-700 mb-1 block">
+                  Search Jobs
+                </label>
+                <div className="relative">
+                  <Search className="h-4 w-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                  <Input
+                    type="text"
+                    placeholder="Search by job number or description..."
+                    className="pl-9"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+              </div>
             </div>
-
-            <Button className="w-full bg-[#1a2133]">
-              Apply Filters
-            </Button>
           </div>
 
-          <div className="bg-white p-6 rounded-lg border border-gray-200">
-            <h3 className="text-lg font-semibold mb-4">Scheduled Jobs</h3>
-
-            <div className="space-y-4">
-              {localScheduledJobs.map((job, index) => (
+          {/* Draggable work orders using HTML5 Drag & Drop */}
+          <div className="bg-white rounded-lg shadow p-4">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-medium">Work Orders</h2>
+              <span className="text-sm text-gray-500">{allWorkOrders.length} items</span>
+            </div>
+            
+            <p className="text-sm text-gray-500 mb-4">
+              Drag work orders to the calendar to schedule them
+            </p>
+            
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              {allWorkOrders.map((workOrder, index) => (
                 <div
-                  key={index}
-                  className="bg-gray-50 p-4 rounded-md cursor-move"
+                  key={String(workOrder.id)}
                   draggable
-                  onDragStart={(e) => handleDragStart(e, job)}
-                  onDragEnd={handleDragEnd}
+                  data-workorder={JSON.stringify(workOrder)}
+                  className="border rounded p-2 bg-gray-50 hover:bg-gray-100 cursor-move"
                 >
-                  <p className="text-sm font-medium text-gray-900">Job #{job.job_number}</p>
-                  <p className="text-xs text-gray-500">Title: {job.title}</p>
-                  <p className="text-xs text-gray-500">Status: {job.status}</p>
-                  <p className="text-xs text-gray-500">Work Center: {job.work_center}</p>
-                  <p className="text-xs text-gray-500">{job.description}</p>
-                  <div className="flex justify-between items-center mt-2">
-                    <span className="text-xs font-medium">
-                      {job.scheduled_date
-                        ? `Scheduled: ${format(new Date(job.scheduled_date), "MMM dd, yyyy")}`
-                        : 'Not scheduled'
-                      }
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-blue-600">
+                        Job #{workOrder.job_number}
+                      </div>
+                      <div className="text-sm">
+                        {workOrder.description || `Operation ${workOrder.operation_number || "-"}`}
+                      </div>
+                    </div>
+                    <div className="flex items-center">
+                      <div className={`px-2 py-1 text-xs rounded-full ${
+                        workOrder.status === "Completed" ? "bg-green-100 text-green-800" :
+                        workOrder.status === "In Progress" ? "bg-blue-100 text-blue-800" :
+                        workOrder.status === "On Hold" ? "bg-yellow-100 text-yellow-800" :
+                        "bg-gray-100 text-gray-800"
+                      }`}>
+                        {workOrder.status || "Not Started"}
+                      </div>
+                      <Move className="h-4 w-4 ml-1 text-gray-400" />
+                    </div>
+                  </div>
+                  <div className="mt-1 flex justify-between text-xs text-gray-500">
+                    <span>
+                      {workOrder.work_center || "No work center"}
                     </span>
-                    <span className="text-xs text-gray-500">Drag to schedule</span>
+                    <span>
+                      {workOrder.planned_hours ? `${workOrder.planned_hours} hrs` : "No hours"}
+                    </span>
                   </div>
                 </div>
               ))}
+              
+              {allWorkOrders.length === 0 && (
+                <div className="text-center py-4 text-gray-500">
+                  No work orders found for the selected filters
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        <div className="lg:col-span-3">
-          {viewMode === "calendar" ? (
-            <div className="bg-white p-6 rounded-lg border border-gray-200">
+        {/* Calendar with drop zone */}
+        <div 
+          className="lg:col-span-3"
+        >
+          <div className="bg-white rounded-lg shadow p-4">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold">Production Calendar</h3>
-                <div className="flex space-x-2">
-                  <Button variant="outline" size="sm" className="p-1">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
-                    </svg>
+              <div className="flex items-center space-x-2">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setDate(new Date())}
+                >
+                  Today
                   </Button>
-
-                  <Button variant="outline" size="sm" className="p-1">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                    </svg>
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  onClick={() => {
+                    const newDate = new Date(date);
+                    if (view === "day") {
+                      newDate.setDate(newDate.getDate() - 1);
+                    } else if (view === "week") {
+                      newDate.setDate(newDate.getDate() - 7);
+                    } else {
+                      newDate.setMonth(newDate.getMonth() - 1);
+                    }
+                    setDate(newDate);
+                  }}
+                >
+                  <ChevronLeft className="h-4 w-4" />
                   </Button>
-
-                  <Button variant="outline" size="sm">
-                    today
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  onClick={() => {
+                    const newDate = new Date(date);
+                    if (view === "day") {
+                      newDate.setDate(newDate.getDate() + 1);
+                    } else if (view === "week") {
+                      newDate.setDate(newDate.getDate() + 7);
+                    } else {
+                      newDate.setMonth(newDate.getMonth() + 1);
+                    }
+                    setDate(newDate);
+                  }}
+                >
+                  <ChevronRight className="h-4 w-4" />
                   </Button>
+                <h2 className="text-lg font-medium">
+                  {view === "day" ? format(date, "MMMM d, yyyy") :
+                   view === "week" ? "Week of " + format(date, "MMMM d, yyyy") :
+                   format(date, "MMMM yyyy")}
+                </h2>
                 </div>
 
-                <div className="flex items-center">
-                  <h2 className="text-xl font-bold">{format(today, "MMMM yyyy")}</h2>
-                </div>
-
-                <div className="flex space-x-2">
-                  <Button variant="default" size="sm" className="bg-[#1a2133]">
-                    month
+              <div className="flex items-center space-x-2">
+                <Button 
+                  variant={view === "month" ? "default" : "outline"} 
+                  size="sm"
+                  onClick={() => setView("month")}
+                >
+                  Month
+                </Button>
+                <Button 
+                  variant={view === "week" ? "default" : "outline"} 
+                  size="sm"
+                  onClick={() => setView("week")}
+                >
+                  Week
                   </Button>
-                  <Button variant="outline" size="sm">
-                    week
+                <Button 
+                  variant={view === "day" ? "default" : "outline"} 
+                  size="sm"
+                  onClick={() => setView("day")}
+                >
+                  Day
                   </Button>
                 </div>
               </div>
 
-              <div className="border border-gray-200 rounded-md overflow-hidden">
-                <div className="grid grid-cols-7 bg-gray-50">
-                  {calendarDays.slice(0, 7).map((day, index) => (
-                    <div key={`header-${index}`} className="text-center py-2 border-r border-b border-gray-200 text-sm font-medium">
-                      {format(day.date, "EEE")}
-                      <div className="text-[10px] text-gray-500">{format(day.date, "MMM d")}</div>
+            <div 
+              className="h-[600px]"
+              data-droppable="true"
+            >
+              <Calendar
+                localizer={localizer}
+                events={calendarEvents}
+                startAccessor="start"
+                endAccessor="end"
+                view={view}
+                date={date}
+                onNavigate={setDate}
+                onView={(newView: any) => setView(newView)}
+                selectable
+                onSelectEvent={handleSelectEvent}
+                onSelectSlot={handleSelectSlot}
+                components={{
+                  event: EventComponent
+                }}
+                eventPropGetter={(event) => ({
+                  style: {
+                    backgroundColor: statusColors[event.status] || statusColors["Not Started"]
+                  }
+                })}
+              />
                     </div>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-7">
-                  {calendarDays.map((day, index) => (
-                    <div
-                      key={`day-${index}`}
-                      className={`min-h-[120px] border-r border-b border-gray-200 p-1 ${day.date.getMonth() === today.getMonth() ? "bg-white" : "bg-gray-50"
-                        }`}
-                      onDrop={(e) => handleDrop(e, day.date)}
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                    >
-                      <div className="text-right text-sm text-gray-500 mb-1">
-                        {format(day.date, "d")}
-                      </div>
-                      {getJobsForDay(day.date).map((job, jobIndex) => (
-                        <div
-                          key={`${job.id}-${jobIndex}`}
-                          className={`mb-1 px-1 py-0.5 rounded text-xs truncate cursor-move ${job.status === 'Completed' ? 'bg-green-200 text-green-800' :
-                            job.status === 'In Progress' ? 'bg-blue-200 text-blue-800' :
-                              job.status === 'Delayed' ? 'bg-red-200 text-red-800' :
-                                job.status === 'On Hold' ? 'bg-yellow-200 text-yellow-800' :
-                                  'bg-gray-200 text-gray-800'
-                            }`}
-                          title={`Job #${job.job_number} - ${job.title}`}
-                          draggable
-                          onDragStart={(e) => handleDragStart(e, job)}
-                          onDragEnd={handleDragEnd}
-                        >
-                          #{job.job_number}
-                          {job.work_center && (
-                            <span className="text-[10px] block opacity-75">{job.work_center}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
                 </div>
               </div>
             </div>
-          ) : (
-            <div className="bg-white p-6 rounded-lg border border-gray-200">
-              <h3 className="text-lg font-semibold mb-4">Job List</h3>
-              <div className="space-y-4">
-                {localScheduledJobs.map((job, index) => (
-                  <div key={index} className="bg-gray-50 p-4 rounded-md">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">Job #{job.job_number}</p>
-                        <p className="text-xs text-gray-500">Title: {job.title}</p>
-                        <p className="text-xs text-gray-500">Status: {job.status}</p>
-                        <p className="text-xs text-gray-500">Work Center: {job.work_center}</p>
-                        <p className="text-xs text-gray-500">{job.description}</p>
+      
+      {/* Legend */}
+      <div className="mt-6 bg-white rounded-lg shadow p-4">
+        <h3 className="text-sm font-medium mb-2">Status Legend</h3>
+        <div className="flex flex-wrap gap-4">
+          <div className="flex items-center">
+            <div className="w-4 h-4 rounded mr-2" style={{ backgroundColor: statusColors["Not Started"] }}></div>
+            <span className="text-sm">Not Started</span>
                       </div>
+          <div className="flex items-center">
+            <div className="w-4 h-4 rounded mr-2" style={{ backgroundColor: statusColors["In Progress"] }}></div>
+            <span className="text-sm">In Progress</span>
                     </div>
-                    <div className="mt-2 flex justify-between items-center">
-                      <span className="text-xs font-medium">
-                        {job.scheduled_date
-                          ? `Scheduled: ${format(new Date(job.scheduled_date), "MMM dd, yyyy")}`
-                          : 'Not scheduled'
-                        }
-                      </span>
-                      <span className="text-xs text-gray-500">
-                        Progress: {job.progress}%
-                      </span>
+          <div className="flex items-center">
+            <div className="w-4 h-4 rounded mr-2" style={{ backgroundColor: statusColors["Completed"] }}></div>
+            <span className="text-sm">Completed</span>
                     </div>
+          <div className="flex items-center">
+            <div className="w-4 h-4 rounded mr-2" style={{ backgroundColor: statusColors["On Hold"] }}></div>
+            <span className="text-sm">On Hold</span>
                   </div>
-                ))}
-              </div>
+          <div className="flex items-center">
+            <div className="w-4 h-4 rounded mr-2" style={{ backgroundColor: statusColors["Cancelled"] }}></div>
+            <span className="text-sm">Cancelled</span>
             </div>
-          )}
         </div>
       </div>
+
+      {/* Drag and drop status indicator */}
+      {draggingWorkOrder && (
+        <div className="fixed bottom-4 right-4 bg-blue-600 text-white p-3 rounded-lg shadow-lg z-50">
+          <div className="flex items-center">
+            <Move className="h-4 w-4 mr-2 animate-pulse" />
+            <span>Dragging: {draggingWorkOrder.description || `Operation ${draggingWorkOrder.operation_number}`}</span>
+          </div>
+          <div className="text-xs mt-1 text-blue-100">
+            Drop on calendar to schedule
+          </div>
+        </div>
+      )}
+
+      {/* Debug info */}
+      {debugInfo && (
+        <div className="fixed bottom-4 left-4 bg-gray-800 text-white p-3 rounded-lg shadow-lg z-50 max-w-md">
+          <div className="text-xs font-mono">{debugInfo}</div>
+        </div>
+      )}
     </div>
   );
-}
+};
+
+export default Scheduling;
