@@ -69,62 +69,38 @@ export default function Navbar() {
     { 
       href: "/scheduling", 
       label: "Scheduling", 
-      icon: <Calendar size={18} />,
-      roles: ['admin', 'manager']
+      icon: <Calendar size={18} />
     },
     { 
       href: "/forecasting", 
       label: "Forecasting", 
-      icon: <FileText size={18} />,
-      roles: ['admin', 'manager'] 
+      icon: <FileText size={18} />
     },
     { 
       href: "/work-centers", 
       label: "Work Centers", 
-      icon: <Factory size={18} />,
-      roles: ['admin', 'manager']
+      icon: <Factory size={18} />
     },
     { 
       href: "/logistics", 
       label: "Logistics", 
-      icon: <Truck size={18} />,
-      roles: ['admin', 'manager']
+      icon: <Truck size={18} />
     },
     { 
       href: "/purchase", 
       label: "Purchase", 
-      icon: <ShoppingCart size={18} />,
-      roles: ['admin', 'manager']
+      icon: <ShoppingCart size={18} />
     },
     { 
       href: "/ncr-tracking", 
       label: "NCR Tracker", 
-      icon: <AlertTriangle size={18} />,
-      roles: ['admin', 'manager']
+      icon: <AlertTriangle size={18} />
     },
-    // Legacy routes for backward compatibility
+    // Shop Lead is still available for workers
     { 
       href: "/shop-lead", 
       label: "Shop Lead", 
       icon: <User size={18} />,
-      roles: ['worker']
-    },
-    { 
-      href: "/machinist", 
-      label: "Machinist", 
-      icon: <Factory size={18} />,
-      roles: ['worker']
-    },
-    { 
-      href: "/welder", 
-      label: "Welder", 
-      icon: <Factory size={18} />,
-      roles: ['worker']
-    },
-    { 
-      href: "/mechanic", 
-      label: "Mechanic", 
-      icon: <Factory size={18} />,
       roles: ['worker']
     }
   ];

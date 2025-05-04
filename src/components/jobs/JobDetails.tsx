@@ -106,7 +106,7 @@ export function JobDetails({ job }: JobDetailsProps) {
     const [attachments, setAttachments] = useState<Record<string, Array<{ name: string, url: string, type: string, id: string }>>>({});
     const [uploadProgress, setUploadProgress] = useState(0);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
-    
+
     // New state variables for added features
     const [dailyUpdates, setDailyUpdates] = useState<DailyUpdate[]>([]);
     const [employeePerformance, setEmployeePerformance] = useState<EmployeePerformance[]>([]);
@@ -255,27 +255,27 @@ export function JobDetails({ job }: JobDetailsProps) {
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, partName: string) => {
         const files = e.target.files;
         if (!files || files.length === 0) return;
-        
+
         setIsUploading(true);
         setUploadProgress(0);
-        
+
         try {
             const file = files[0];
             const fileExt = file.name.split('.').pop();
             const fileName = `${job?.job_number}_${partName.replace(/\s+/g, '_')}_${Date.now()}.${fileExt}`;
             const filePath = `job-attachments/${fileName}`;
-            
+
             // Create the storage bucket if it doesn't exist (will be ignored if it exists)
             const { error: bucketError } = await supabase.storage.createBucket('job-documents', {
                 public: true,
                 fileSizeLimit: 10485760, // 10MB
             });
-            
+
             if (bucketError && !bucketError.message.includes('already exists')) {
                 console.warn('Error creating bucket:', bucketError);
                 // Continue anyway, bucket might exist already
             }
-            
+
             // Upload file to storage
             const { data, error } = await supabase.storage
                 .from('job-documents')
@@ -284,14 +284,14 @@ export function JobDetails({ job }: JobDetailsProps) {
                     upsert: false,
                     contentType: file.type
                 });
-                
+
             if (error) throw error;
-            
+
             // Get public URL for the file
             const { data: urlData } = supabase.storage
                 .from('job-documents')
                 .getPublicUrl(filePath);
-                
+
             // Try to save attachment metadata to database, but don't fail if table doesn't exist
             let attachmentId = `temp-${Date.now()}`;
             try {
@@ -309,7 +309,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                         }
                     ])
                     .select();
-                    
+
                 if (attachmentError) {
                     console.warn('Error inserting into job_attachments table:', attachmentError);
                     // Continue with temporary ID if table doesn't exist
@@ -320,29 +320,29 @@ export function JobDetails({ job }: JobDetailsProps) {
                 console.warn('Error with database operation:', dbError);
                 // Continue with temporary ID if table doesn't exist
             }
-            
+
             // Update local state with new attachment
             setAttachments(prev => {
                 const newAttachments = { ...prev };
                 if (!newAttachments[partName]) {
                     newAttachments[partName] = [];
                 }
-                
+
                 newAttachments[partName].push({
                     name: file.name,
                     url: urlData.publicUrl,
                     type: file.type,
                     id: attachmentId
                 });
-                
+
                 return newAttachments;
             });
-            
+
             toast({
                 title: "File uploaded successfully",
                 description: `${file.name} has been attached to ${partName}`,
             });
-            
+
         } catch (error) {
             console.error('Error uploading file:', error);
             toast({
@@ -360,11 +360,11 @@ export function JobDetails({ job }: JobDetailsProps) {
             }
         }
     };
-    
+
     const handleDeleteAttachment = async (partName: string, attachmentId: string) => {
         try {
             let filePath: string | null = null;
-            
+
             // First try to get the attachment details from the database if the ID is not temporary
             if (!attachmentId.startsWith('temp-')) {
                 try {
@@ -373,7 +373,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                         .select('*')
                         .eq('id', attachmentId)
                         .single();
-                        
+
                     if (fetchError) {
                         console.warn('Error fetching attachment:', fetchError);
                     } else if (attachmentData) {
@@ -384,28 +384,28 @@ export function JobDetails({ job }: JobDetailsProps) {
                     // Continue with just local state update if necessary
                 }
             }
-            
+
             // If we have a file path from the database, delete the file from storage
             if (filePath) {
                 try {
                     const { error: storageError } = await supabase.storage
                         .from('job-documents')
                         .remove([filePath]);
-                        
+
                     if (storageError) {
                         console.warn('Error removing file from storage:', storageError);
                     }
                 } catch (storageError) {
                     console.warn('Error with storage operation:', storageError);
                 }
-                
+
                 // Try to delete the metadata from the database
                 try {
                     const { error: deleteError } = await supabase
                         .from('job_attachments')
                         .delete()
                         .eq('id', attachmentId);
-                        
+
                     if (deleteError) {
                         console.warn('Error deleting from job_attachments table:', deleteError);
                     }
@@ -416,7 +416,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                 // If we don't have a file path (temporary ID), just delete the entry from local state
                 console.log('No file path found in database, only updating local state');
             }
-            
+
             // Always update local state
             setAttachments(prev => {
                 const newAttachments = { ...prev };
@@ -427,12 +427,12 @@ export function JobDetails({ job }: JobDetailsProps) {
                 }
                 return newAttachments;
             });
-            
+
             toast({
                 title: "Attachment deleted",
                 description: "The file has been removed successfully",
             });
-            
+
         } catch (error) {
             console.error('Error deleting attachment:', error);
             toast({
@@ -442,18 +442,18 @@ export function JobDetails({ job }: JobDetailsProps) {
             });
         }
     };
-    
+
     // Load attachments for all parts when the component mounts
     React.useEffect(() => {
         const fetchAttachments = async () => {
             if (!job?.job_number) return;
-            
+
             try {
                 const { data, error } = await supabase
                     .from('job_attachments')
                     .select('*')
                     .eq('job_number', job.job_number);
-                    
+
                 if (error) {
                     if (error.code === '42P01') { // Table doesn't exist
                         console.warn('job_attachments table does not exist yet:', error.message);
@@ -461,15 +461,15 @@ export function JobDetails({ job }: JobDetailsProps) {
                     }
                     throw error;
                 }
-                
+
                 // Group attachments by part name
                 const attachmentsByPart: Record<string, Array<{ name: string, url: string, type: string, id: string }>> = {};
-                
+
                 data.forEach(attachment => {
                     if (!attachmentsByPart[attachment.part_name]) {
                         attachmentsByPart[attachment.part_name] = [];
                     }
-                    
+
                     attachmentsByPart[attachment.part_name].push({
                         name: attachment.file_name,
                         url: attachment.file_url,
@@ -477,15 +477,15 @@ export function JobDetails({ job }: JobDetailsProps) {
                         id: attachment.id
                     });
                 });
-                
+
                 setAttachments(attachmentsByPart);
-                
+
             } catch (error) {
                 console.error('Error fetching attachments:', error);
                 // Don't show toast for this error as it's not critical
             }
         };
-        
+
         fetchAttachments();
     }, [job?.job_number]);
 
@@ -630,7 +630,7 @@ export function JobDetails({ job }: JobDetailsProps) {
             title: "Notification sent",
             description: `Reminder sent to employee #${employeeId}`,
         });
-        
+
         // Remove from the list
         setMissingClockIns(prev => prev.filter(item => item.employee_id !== employeeId));
     };
@@ -645,15 +645,15 @@ export function JobDetails({ job }: JobDetailsProps) {
             return <PaperclipIcon className="h-4 w-4 text-gray-500" />;
         }
     };
-    
+
     // Render attachments for a specific part
     const renderAttachments = (partName: string) => {
         const partAttachments = attachments[partName] || [];
-        
+
         if (partAttachments.length === 0) {
             return null;
         }
-        
+
         return (
             <div className="mt-2 space-y-1">
                 <p className="text-xs font-medium text-gray-500">Attachments:</p>
@@ -665,9 +665,9 @@ export function JobDetails({ job }: JobDetailsProps) {
                                 <span className="truncate max-w-[150px]">{attachment.name}</span>
                             </div>
                             <div className="flex space-x-1">
-                                <a 
-                                    href={attachment.url} 
-                                    target="_blank" 
+                                <a
+                                    href={attachment.url}
+                                    target="_blank"
                                     rel="noopener noreferrer"
                                     className="text-blue-500 hover:text-blue-700"
                                 >
@@ -700,8 +700,8 @@ export function JobDetails({ job }: JobDetailsProps) {
                                 – {operations.filter(op => op.status === 'Complete').length}/{operations.length} complete
                             </span>
                         </CardTitle>
-                        <Button 
-                            variant="outline" 
+                        <Button
+                            variant="outline"
                             size="sm"
                             className="h-8 gap-1"
                             onClick={() => {
@@ -760,14 +760,14 @@ export function JobDetails({ job }: JobDetailsProps) {
     // In Progress / Pending Parts - Updated with attachments
     const renderInProgressParts = () => {
         const [expandedParts, setExpandedParts] = useState<Record<string, boolean>>({});
-        
+
         const togglePart = (partName: string) => {
             setExpandedParts(prev => ({
                 ...prev,
                 [partName]: !prev[partName]
             }));
         };
-        
+
         return (
             <div className="mt-8">
                 <div className="flex items-center gap-2 mb-4">
@@ -778,10 +778,10 @@ export function JobDetails({ job }: JobDetailsProps) {
                     inProgressParts.length > 0 ? (
                         inProgressParts.map(([partName, operations], index) => {
                             const isExpanded = expandedParts[partName] || false;
-                            
+
                             return (
                                 <Card key={index} className="mb-4 overflow-hidden border-blue-200">
-                                    <CardHeader 
+                                    <CardHeader
                                         className="bg-blue-50 py-2 px-4 cursor-pointer"
                                         onClick={() => togglePart(partName)}
                                     >
@@ -796,8 +796,8 @@ export function JobDetails({ job }: JobDetailsProps) {
                                                 </span>
                                             </CardTitle>
                                             <div className="flex items-center">
-                                                <Button 
-                                                    variant="outline" 
+                                                <Button
+                                                    variant="outline"
                                                     size="sm"
                                                     className="h-8 gap-1 mr-2"
                                                     onClick={(e) => {
@@ -902,14 +902,14 @@ export function JobDetails({ job }: JobDetailsProps) {
                     <span role="img" aria-label="calendar" className="text-2xl">📆</span>
                     <span className="text-xl font-semibold">Daily Updates</span>
                 </div>
-                <Button 
-                    variant="outline" 
+                <Button
+                    variant="outline"
                     onClick={() => setIsAddingDailyUpdate(true)}
                 >
                     Add Update
                 </Button>
             </div>
-            
+
             {dailyUpdates.length > 0 ? (
                 <div className="space-y-4">
                     {dailyUpdates.map((update) => (
@@ -929,14 +929,14 @@ export function JobDetails({ job }: JobDetailsProps) {
                                         <h4 className="text-sm font-semibold">Progress Notes:</h4>
                                         <p className="text-sm">{update.notes}</p>
                                     </div>
-                                    
+
                                     {update.challenges && (
                                         <div>
                                             <h4 className="text-sm font-semibold">Challenges:</h4>
                                             <p className="text-sm">{update.challenges}</p>
                                         </div>
                                     )}
-                                    
+
                                     {update.action_items && (
                                         <div>
                                             <h4 className="text-sm font-semibold">Action Items:</h4>
@@ -953,7 +953,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                     No updates available
                 </div>
             )}
-            
+
             {/* Add Daily Update Dialog */}
             <Dialog open={isAddingDailyUpdate} onOpenChange={setIsAddingDailyUpdate}>
                 <DialogContent>
@@ -974,7 +974,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                                 onChange={(e) => setNewDailyUpdate(prev => ({ ...prev, date: e.target.value }))}
                             />
                         </div>
-                        
+
                         <div>
                             <label className="text-sm font-medium">Progress (%)</label>
                             <input
@@ -986,7 +986,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                                 onChange={(e) => setNewDailyUpdate(prev => ({ ...prev, progress: Number(e.target.value) }))}
                             />
                         </div>
-                        
+
                         <div>
                             <label className="text-sm font-medium">Notes*</label>
                             <textarea
@@ -997,7 +997,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                                 placeholder="Describe the work completed today"
                             />
                         </div>
-                        
+
                         <div>
                             <label className="text-sm font-medium">Challenges</label>
                             <textarea
@@ -1008,7 +1008,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                                 placeholder="Any issues or challenges faced"
                             />
                         </div>
-                        
+
                         <div>
                             <label className="text-sm font-medium">Action Items</label>
                             <textarea
@@ -1022,13 +1022,13 @@ export function JobDetails({ job }: JobDetailsProps) {
                     </div>
 
                     <DialogFooter>
-                        <Button 
-                            variant="outline" 
+                        <Button
+                            variant="outline"
                             onClick={() => setIsAddingDailyUpdate(false)}
                         >
                             Cancel
                         </Button>
-                        <Button 
+                        <Button
                             onClick={handleAddDailyUpdate}
                         >
                             Save Update
@@ -1055,13 +1055,13 @@ export function JobDetails({ job }: JobDetailsProps) {
                     <UserIcon className="h-6 w-6 text-blue-500" />
                     <span className="text-xl font-semibold">Employee Performance Analysis</span>
                 </div>
-                
+
                 <Tabs defaultValue="table">
                     <TabsList className="mb-4">
                         <TabsTrigger value="table">Table View</TabsTrigger>
                         <TabsTrigger value="chart">Chart View</TabsTrigger>
                     </TabsList>
-                    
+
                     <TabsContent value="table">
                         <div className="overflow-x-auto rounded">
                             <div className="min-w-[900px]">
@@ -1112,7 +1112,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                             </div>
                         </div>
                     </TabsContent>
-                    
+
                     <TabsContent value="chart">
                         <div className="bg-white p-4 rounded-lg border">
                             <h3 className="text-lg font-medium mb-4">Employee Efficiency & Hours</h3>
@@ -1150,7 +1150,7 @@ export function JobDetails({ job }: JobDetailsProps) {
                     <Badge variant="destructive" className="ml-2">{missingClockIns.length}</Badge>
                 )}
             </div>
-            
+
             {missingClockIns.length > 0 ? (
                 <div className="space-y-3">
                     {missingClockIns.map((item) => (
@@ -1437,11 +1437,11 @@ export function JobDetails({ job }: JobDetailsProps) {
                                     <p className="mb-2 text-sm text-gray-500"><span className="font-semibold">Click to upload</span> or drag and drop</p>
                                     <p className="text-xs text-gray-500">PDF or Word document (MAX. 10MB)</p>
                                 </div>
-                                <input 
+                                <input
                                     ref={fileInputRef}
-                                    id="dropzone-file" 
-                                    type="file" 
-                                    className="hidden" 
+                                    id="dropzone-file"
+                                    type="file"
+                                    className="hidden"
                                     accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                                     onChange={(e) => selectedPartForUpload && handleFileUpload(e, selectedPartForUpload)}
                                 />
@@ -1462,8 +1462,8 @@ export function JobDetails({ job }: JobDetailsProps) {
                     </div>
 
                     <DialogFooter>
-                        <Button 
-                            variant="outline" 
+                        <Button
+                            variant="outline"
                             onClick={() => setIsAttachmentDialogOpen(false)}
                             disabled={isUploading}
                         >
